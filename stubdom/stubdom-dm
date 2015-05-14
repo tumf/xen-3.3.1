@@ -1,0 +1,101 @@
+#!/bin/bash
+#
+# Copyright 2007-2008 Samuel Thibault <samuel.thibault@eu.citrix.net>
+#
+# dm script around stubdomains.
+#
+
+# To fit xterms nicely
+height=339
+
+# Parse arguments
+
+domid=
+domname=
+vncviewer=0
+vncpid=
+extra=
+while [ "$#" -gt 0 ];
+do
+    if [ "$#" -ge 2 ];
+    then
+	case "$1" in
+	    -d)
+                domid=$2;
+                extra="$extra -d $domid";
+                shift
+                ;;
+	    -domain-name)
+                domname=$2;
+                shift
+                ;;
+	    -vnc)
+		ip=${2%:*};
+		vnc_port=${2#*:};
+		shift
+		;;
+            -loadvm)
+                extra="$extra -loadvm $2";
+                shift
+                ;;
+	esac
+    fi
+    case "$1" in
+	-vncviewer) vncviewer=1 ;;
+    esac
+    shift
+done
+
+[ -z "$domid"   ] && ( echo "couldn't find domain ID" ; exit 1 )
+[ -z "$domname" ] && ( echo "couldn't find domain name" ; exit 1 )
+
+# Termination handler
+
+term() {
+    kill %1
+    (
+	[ -n "$vncpid" ] && kill -9 $vncpid
+	xm destroy $domname-dm
+	#xm destroy $domname
+    ) &
+    # We need to exit immediately so as to let xend do the commands above
+    exit 0
+}
+
+trap term SIGHUP
+
+############
+# stubdomain
+# Wait for any previous stubdom to terminate
+while xm list | grep $domname-dm
+do
+	sleep 1
+done
+
+creation="xm create -c $domname-dm target=$domid memory=32 extra=\"$extra\""
+
+(while true ; do sleep 60 ; done) | /bin/sh -c "$creation" &
+#xterm -geometry +0+0 -e /bin/sh -c "$creation ; echo ; echo press ENTER to shut down ; read" &
+consolepid=$!
+
+
+###########
+# vncviewer
+if [ "$vncviewer" = 1 ]
+then
+    # Wait for vnc server to appear
+    while ! vnc_port=`xenstore-read /local/domain/$domid/console/vnc-port`
+    do
+        # Check that the stubdom job is still alive
+        kill -0 $consolepid || term
+	sleep 1
+    done
+
+    vncviewer $ip:$vnc_port &
+    vncpid=$!
+fi
+
+# wait for SIGHUP or stubdom termination
+wait $consolepid
+
+term
